@@ -4,20 +4,47 @@ import type { AuthProvider } from "ra-core";
 import { supabaseAuthProvider } from "ra-supabase-core";
 
 import { canAccess } from "../commons/canAccess";
+import { getActiveOrgId, setActiveOrgId } from "./activeOrg";
 import { supabase } from "./supabase";
+
+// Define the shape of our new Member/Profile hybrid
+type OrgMemberProfile = {
+  id: number; // org_member id
+  organization_id: number;
+  user_id: string;
+  role: string;
+  status: string;
+  user_profiles: {
+    full_name: string;
+    avatar_url: string | null;
+  } | null;
+  organizations: {
+    name: string;
+    plan: string;
+  } | null;
+};
 
 const baseAuthProvider = supabaseAuthProvider(supabase, {
   getIdentity: async () => {
-    const sale = await getSaleFromCache();
+    const { activeMember, allMemberships } = await getActiveMembership();
 
-    if (sale == null) {
-      throw new Error();
+    if (activeMember == null) {
+      throw new Error("No active membership found");
     }
 
+    const profile = activeMember.user_profiles || { full_name: "Unknown", avatar_url: null };
+
     return {
-      id: sale.id,
-      fullName: `${sale.first_name} ${sale.last_name}`,
-      avatar: sale.avatar?.src,
+      id: activeMember.id,
+      fullName: profile.full_name,
+      avatar: profile.avatar_url ?? undefined,
+      activeOrgId: activeMember.organization_id,
+      availableOrgs: allMemberships.map(m => ({
+        id: m.organization_id,
+        name: m.organizations?.name,
+        plan: m.organizations?.plan,
+        role: m.role
+      }))
     };
   },
 });
@@ -25,10 +52,8 @@ const baseAuthProvider = supabaseAuthProvider(supabase, {
 export async function getIsInitialized() {
   if (getIsInitialized._is_initialized_cache == null) {
     const { data } = await supabase.from("init_state").select("is_initialized");
-
     getIsInitialized._is_initialized_cache = data?.at(0)?.is_initialized > 0;
   }
-
   return getIsInitialized._is_initialized_cache;
 }
 
@@ -40,55 +65,48 @@ export const authProvider: AuthProvider = {
   ...baseAuthProvider,
   login: async (params) => {
     const result = await baseAuthProvider.login(params);
-    // clear cached sale
-    cachedSale = undefined;
+    // clear cached member
+    cachedMember = undefined;
     return result;
   },
   checkAuth: async (params) => {
-    // Users are on the set-password page, nothing to do
+    // Whitelist public pages
+    const path = window.location.pathname;
+    const hash = window.location.hash;
     if (
-      window.location.pathname === "/set-password" ||
-      window.location.hash.includes("#/set-password")
-    ) {
-      return;
-    }
-    // Users are on the forgot-password page, nothing to do
-    if (
-      window.location.pathname === "/forgot-password" ||
-      window.location.hash.includes("#/forgot-password")
-    ) {
-      return;
-    }
-    // Users are on the sign-up page, nothing to do
-    if (
-      window.location.pathname === "/sign-up" ||
-      window.location.hash.includes("#/sign-up")
+      path === "/set-password" || hash.includes("#/set-password") ||
+      path === "/forgot-password" || hash.includes("#/forgot-password") ||
+      path === "/sign-up" || hash.includes("#/sign-up")
     ) {
       return;
     }
 
     const isInitialized = await getIsInitialized();
-
     if (!isInitialized) {
       await supabase.auth.signOut();
-      throw {
-        redirectTo: "/sign-up",
-        message: false,
-      };
+      throw { redirectTo: "/sign-up", message: false };
     }
 
-    return baseAuthProvider.checkAuth(params);
+    // Standard check (validates session expiry)
+    await baseAuthProvider.checkAuth(params);
+
+    // Ensure we have an active org context
+    const { activeMember } = await getActiveMembership();
+    if (!activeMember) {
+      return;
+    }
   },
   canAccess: async (params) => {
     const isInitialized = await getIsInitialized();
     if (!isInitialized) return false;
 
-    // Get the current user
-    const sale = await getSaleFromCache();
-    if (sale == null) return false;
+    const { activeMember } = await getActiveMembership();
+    if (activeMember == null) return false;
 
-    // Compute access rights from the sale role
-    const role = sale.administrator ? "admin" : "user";
+    // Compute access rights from the role
+    // Map 'owner'/'admin' to administrator privileges
+    const administrator = activeMember.role === 'owner' || activeMember.role === 'admin';
+    const role = administrator ? "admin" : "user";
     return canAccess(role, params);
   },
   getAuthorizationDetails(authorizationId: string) {
@@ -102,29 +120,52 @@ export const authProvider: AuthProvider = {
   },
 };
 
-let cachedSale: any;
-const getSaleFromCache = async () => {
-  if (cachedSale != null) return cachedSale;
+let cachedMember: OrgMemberProfile | undefined;
+let cachedMemberships: OrgMemberProfile[] | undefined;
 
-  const { data: dataSession, error: errorSession } =
-    await supabase.auth.getSession();
+// This is the core logic for Context Switching
+const getActiveMembership = async (): Promise<{ activeMember: OrgMemberProfile | undefined, allMemberships: OrgMemberProfile[] }> => {
+  // We don't use simple caching here because we want to allow switching
+  // But for performance within a render cycle, maybe? 
+  // For now, let's relie on Supabase client caching of session.
+  // Actually, we should cache the memberships to avoid DB hit on every render.
+  if (cachedMember && cachedMemberships) {
+    return { activeMember: cachedMember, allMemberships: cachedMemberships };
+  }
 
-  // Shouldn't happen after login but just in case
+  const { data: dataSession, error: errorSession } = await supabase.auth.getSession();
   if (dataSession?.session?.user == null || errorSession) {
-    return undefined;
+    return { activeMember: undefined, allMemberships: [] };
   }
 
-  const { data: dataSale, error: errorSale } = await supabase
-    .from("sales")
-    .select("id, first_name, last_name, avatar, administrator")
-    .match({ user_id: dataSession?.session?.user.id })
-    .single();
+  const userId = dataSession.session.user.id;
 
-  // Shouldn't happen either as all users are sales but just in case
-  if (dataSale == null || errorSale) {
-    return undefined;
+  // Fetch ALL memberships for this user
+  const { data: memberships, error } = await supabase
+    .from("org_members")
+    .select("*, user_profiles(full_name, avatar_url), organizations(name, plan)")
+    .eq("user_id", userId);
+
+  if (error || !memberships || memberships.length === 0) {
+    console.warn("User has no Organization Memberships.");
+    return { activeMember: undefined, allMemberships: [] };
   }
 
-  cachedSale = dataSale;
-  return dataSale;
+  // Determine Active Org
+  const storedOrgId = getActiveOrgId();
+  let activeMember = memberships.find(m => m.organization_id === storedOrgId);
+
+  // Fallback to first membership if stored ID is invalid/missing
+  if (!activeMember) {
+    activeMember = memberships[0];
+    setActiveOrgId(activeMember.organization_id); // Save default and Set Header
+  } else {
+    // Ensure header is set even if found in storage
+    setActiveOrgId(activeMember.organization_id);
+  }
+
+  cachedMember = activeMember as unknown as OrgMemberProfile;
+  cachedMemberships = memberships as unknown as OrgMemberProfile[];
+
+  return { activeMember: cachedMember, allMemberships: cachedMemberships };
 };

@@ -1,1 +1,1 @@
-make registry-gen
+npm run registry:gen
