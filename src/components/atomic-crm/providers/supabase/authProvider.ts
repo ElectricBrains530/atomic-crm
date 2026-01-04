@@ -13,10 +13,12 @@ type OrgMemberProfile = {
   organization_id: number;
   user_id: string;
   role: string;
-  status: string;
-  user_profiles: {
-    full_name: string;
-    avatar_url: string | null;
+  status: string; // From org_members or employees? org_members doesn't have status. employees has.
+  // We'll treat this object as the "session context"
+  employee?: {
+    first_name: string;
+    last_name: string;
+    avatar: string | null;
   } | null;
   organizations: {
     name: string;
@@ -32,12 +34,15 @@ const baseAuthProvider = supabaseAuthProvider(supabase, {
       throw new Error("No active membership found");
     }
 
-    const profile = activeMember.user_profiles || { full_name: "Unknown", avatar_url: null };
+    // We need to fetch the Employee profile for the ACTIVE membership matches
+    // But getActiveMembership now returns it attached?
+    // Let's look at getActiveMembership implementation below.
+    const employee = activeMember.employee || { first_name: "Unknown", last_name: "User", avatar: null };
 
     return {
       id: activeMember.id,
-      fullName: profile.full_name,
-      avatar: profile.avatar_url ?? undefined,
+      fullName: `${employee.first_name} ${employee.last_name}`.trim(),
+      avatar: employee.avatar ?? undefined,
       activeOrgId: activeMember.organization_id,
       availableOrgs: allMemberships.map(m => ({
         id: m.organization_id,
@@ -143,7 +148,7 @@ const getActiveMembership = async (): Promise<{ activeMember: OrgMemberProfile |
   // Fetch ALL memberships for this user
   const { data: memberships, error } = await supabase
     .from("org_members")
-    .select("*, user_profiles(full_name, avatar_url), organizations(name, plan)")
+    .select("*, organizations(name, plan)")
     .eq("user_id", userId);
 
   if (error || !memberships || memberships.length === 0) {
@@ -153,18 +158,32 @@ const getActiveMembership = async (): Promise<{ activeMember: OrgMemberProfile |
 
   // Determine Active Org
   const storedOrgId = getActiveOrgId();
-  let activeMember = memberships.find(m => m.organization_id === storedOrgId);
+  let activeMemberIdx = memberships.findIndex(m => m.organization_id === storedOrgId);
 
   // Fallback to first membership if stored ID is invalid/missing
-  if (!activeMember) {
-    activeMember = memberships[0];
-    setActiveOrgId(activeMember.organization_id); // Save default and Set Header
+  if (activeMemberIdx === -1) {
+    activeMemberIdx = 0;
+    setActiveOrgId(memberships[0].organization_id); // Save default and Set Header
   } else {
     // Ensure header is set even if found in storage
-    setActiveOrgId(activeMember.organization_id);
+    setActiveOrgId(memberships[activeMemberIdx].organization_id);
   }
 
-  cachedMember = activeMember as unknown as OrgMemberProfile;
+  const activeMember = memberships[activeMemberIdx] as unknown as OrgMemberProfile;
+
+  // FETCH EMPLOYEE PROFILE for this specific Org
+  const { data: employee } = await supabase
+    .from("employees")
+    .select("first_name, last_name, avatar")
+    .eq("user_id", userId)
+    .eq("organization_id", activeMember.organization_id)
+    .single();
+
+  if (employee) {
+    activeMember.employee = employee;
+  }
+
+  cachedMember = activeMember;
   cachedMemberships = memberships as unknown as OrgMemberProfile[];
 
   return { activeMember: cachedMember, allMemberships: cachedMemberships };

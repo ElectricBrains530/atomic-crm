@@ -78,7 +78,7 @@ export const DealCreate = ({ open }: { open: boolean }) => {
         <Create resource="deals" mutationOptions={{ onSuccess }}>
           <Form
             defaultValues={{
-              sales_id: identity?.id,
+              sales_id: null,
               contact_ids: [],
               index: 0,
             }}

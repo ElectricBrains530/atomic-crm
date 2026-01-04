@@ -21,6 +21,7 @@ import type {
 import { getActivityLog } from "../commons/activity";
 import { getCompanyAvatar } from "../commons/getCompanyAvatar";
 import { getContactAvatar } from "../commons/getContactAvatar";
+import { getActiveOrgId } from "./activeOrg";
 import { getIsInitialized } from "./authProvider";
 import { supabase } from "./supabase";
 
@@ -88,6 +89,34 @@ const dataProviderWithCustomMethods = {
     if (resource === "contacts") {
       return baseDataProvider.getList("contacts_summary", params);
     }
+    if (resource === "sales") {
+      const page = params.pagination?.page || 1;
+      const perPage = params.pagination?.perPage || 10;
+      const field = params.sort?.field || "first_name";
+      const order = params.sort?.order === "ASC";
+
+      const { data, count, error } = await supabase
+        .from("employees")
+        .select("*, org_members!inner(role)", { count: "exact" })
+        .eq("organization_id", getActiveOrgId()) // Filter by Active Org
+        .range((page - 1) * perPage, page * perPage - 1)
+        .order(field, { ascending: order });
+
+      if (error) throw error;
+
+      // Transform for UI
+      const results = data.map((d: any) => {
+        const role = d.org_members?.[0]?.role || d.org_members?.role; // Handle array or object from join
+        return {
+          ...d,
+          id: d.id, // employee id
+          administrator: role === 'owner' || role === 'admin',
+          disabled: d.status === 'disabled',
+        };
+      });
+
+      return { data: results, total: count || 0 };
+    }
 
     return baseDataProvider.getList(resource, params);
   },
@@ -98,11 +127,35 @@ const dataProviderWithCustomMethods = {
     if (resource === "contacts") {
       return baseDataProvider.getOne("contacts_summary", params);
     }
+    if (resource === "sales") {
+      const { data, error } = await supabase
+        .from("employees")
+        .select("*, org_members!inner(role)")
+        .eq("id", params.id)
+        .single();
+
+      if (error) throw error;
+
+      const role = data.org_members?.role; // single if 1-1 join? usually array unless !inner and unique. inner implies... still array.
+      // Wait, 1 employee -> 1 org member (in context). 
+      // But we need to filter org_members by organization_id too?
+      // employees has organization_id. org_members has organization_id.
+      // The join should match automatically if we trust the data integrity for that user/org pair.
+      // But standard Supabase join might return array.
+      const roleVal = Array.isArray(data.org_members) ? data.org_members[0]?.role : data.org_members?.role;
+      return {
+        data: {
+          ...data,
+          administrator: roleVal === 'owner' || roleVal === 'admin',
+          disabled: data.status === 'disabled'
+        }
+      }
+    }
 
     return baseDataProvider.getOne(resource, params);
   },
 
-  async signUp({ email, password, first_name, last_name }: SignUpData) {
+  async signUp({ email, password, first_name, last_name, organization_name, organization_descriptor }: SignUpData) {
     const response = await supabase.auth.signUp({
       email,
       password,
@@ -110,6 +163,8 @@ const dataProviderWithCustomMethods = {
         data: {
           first_name,
           last_name,
+          organization_name,
+          organization_descriptor,
         },
       },
     });

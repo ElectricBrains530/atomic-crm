@@ -34,7 +34,7 @@ export const OrganizationSwitcher = () => {
                 <Button variant="ghost" size="sm" className="gap-2 px-2">
                     <Building className="h-4 w-4" />
                     <span className="hidden md:inline-block">
-                        {currentOrg?.name || "Organization"}
+                        {currentOrg?.descriptor || currentOrg?.name || "Organization"}
                     </span>
                 </Button>
             </DropdownMenuTrigger>
@@ -47,7 +47,7 @@ export const OrganizationSwitcher = () => {
                         onClick={() => handleSwitch(org.id)}
                         className="gap-2 justify-between"
                     >
-                        {org.name}
+                        {org.descriptor || org.name}
                         {org.id === identity.activeOrgId && (
                             <Check className="h-4 w-4 opacity-50" />
                         )}

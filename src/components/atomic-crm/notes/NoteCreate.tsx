@@ -98,7 +98,7 @@ const NoteCreateButton = ({
         transform={(data) => ({
           ...data,
           [foreignKeyMapping[reference]]: record.id,
-          sales_id: identity.id,
+          sales_id: null,
           date: data.date || getCurrentDate(),
         })}
         mutationOptions={{

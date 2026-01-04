@@ -1,8 +1,7 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { useDataProvider, useLogin, useNotify } from "ra-core";
 import { useForm, type SubmitHandler } from "react-hook-form";
-import { Navigate } from "react-router";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,18 +9,18 @@ import { Label } from "@/components/ui/label";
 import type { CrmDataProvider } from "../providers/types";
 import { useConfigurationContext } from "../root/ConfigurationContext";
 import type { SignUpData } from "../types";
-import { LoginSkeleton } from "./LoginSkeleton";
+
 
 export const SignupPage = () => {
   const queryClient = useQueryClient();
   const dataProvider = useDataProvider<CrmDataProvider>();
   const { darkModeLogo: logo, title } = useConfigurationContext();
-  const { data: isInitialized, isPending } = useQuery({
-    queryKey: ["init"],
-    queryFn: async () => {
-      return dataProvider.isInitialized();
-    },
-  });
+  // const { data: isInitialized, isPending } = useQuery({
+  //   queryKey: ["init"],
+  //   queryFn: async () => {
+  //     return dataProvider.isInitialized();
+  //   },
+  // });
 
   const { isPending: isSignUpPending, mutate } = useMutation({
     mutationKey: ["signup"],
@@ -57,14 +56,14 @@ export const SignupPage = () => {
     mode: "onChange",
   });
 
-  if (isPending) {
-    return <LoginSkeleton />;
-  }
+  // if (isPending) {
+  //   return <LoginSkeleton />;
+  // }
 
   // For the moment, we only allow one user to sign up. Other users must be created by the administrator.
-  if (isInitialized) {
-    return <Navigate to="/login" />;
-  }
+  // if (isInitialized) {
+  //   return <Navigate to="/login" />;
+  // }
 
   const onSubmit: SubmitHandler<SignUpData> = async (data) => {
     mutate(data);
@@ -103,6 +102,28 @@ export const SignupPage = () => {
                 {...register("last_name", { required: true })}
                 id="last_name"
                 type="text"
+                required
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="organization_name">Organization Name</Label>
+              <Input
+                {...register("organization_name", { required: true })}
+                id="organization_name"
+                type="text"
+                placeholder="e.g. Mr. Roto Rooter"
+                required
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="organization_descriptor">
+                Descriptor <span className="text-xs text-muted-foreground font-normal">(Used to identify workspace)</span>
+              </Label>
+              <Input
+                {...register("organization_descriptor", { required: true })}
+                id="organization_descriptor"
+                type="text"
+                placeholder="e.g. Biloxi Branch - Peach Tree Ln"
                 required
               />
             </div>
